@@ -32,8 +32,15 @@ import java.util.concurrent.ScheduledFuture;;
  */
 public class Simulator implements Runnable {
 
-    public static boolean   USE_SERIAL_PORT       = false;  // use serial port for MAV instead of UDP
-    public static boolean   COMMUNICATE_WITH_QGC  = true;   // open UDP port to QGC
+    private static enum Port {
+        SERIAL,
+        UDP,
+        TCP
+    }
+    private static Port PORT = Port.UDP;
+
+    public static boolean   COMMUNICATE_WITH_QGC  = false;   // open UDP port to QGC
+    public static boolean   COMMUNICATE_WITH_SDK  = false;   // open UDP port to SDK
     public static boolean   DO_MAG_FIELD_LOOKUP   =
         false;  // perform online mag incl/decl lookup for current position
     public static boolean   USE_GIMBAL            =
@@ -43,16 +50,19 @@ public class Simulator implements Runnable {
     public static boolean   GUI_ENABLE_AA         = true;   // anti-alias on 3D scene
     public static ViewTypes GUI_START_VIEW        = ViewTypes.VIEW_STATIC;
     public static ZoomModes GUI_START_ZOOM        = ZoomModes.ZOOM_DYNAMIC;
+    public static boolean LOCKSTEP_ENABLED = false;
     public static boolean   LOG_TO_STDOUT         =
         true;   // send System.out messages to stdout (console) as well as any custom handlers (see SystemOutHandler)
     public static boolean DEBUG_MODE = false;
 
-    public static final int    DEFAULT_SIM_SPEED = 500; // Hz
+    public static final int    DEFAULT_SIM_RATE = 250; // Hz
+    public static final double    DEFAULT_SPEED_FACTOR = 1.0;
     public static final int    DEFAULT_AUTOPILOT_SYSID =
         -1; // System ID of autopilot to communicate with. -1 to auto set ID on first received heartbeat.
     public static final String DEFAULT_AUTOPILOT_TYPE = "generic";  // eg. "px4" or "aq"
     public static final int    DEFAULT_AUTOPILOT_PORT = 14560;
     public static final int    DEFAULT_QGC_PEER_PORT = 14550;
+    public static final int    DEFAULT_SDK_PEER_PORT = 14540;
     public static final String DEFAULT_SERIAL_PATH = "/dev/tty.usbmodem1";
     public static final int    DEFAULT_SERIAL_BAUD_RATE = 230400;
     public static final String LOCAL_HOST = "127.0.0.1";
@@ -91,19 +101,22 @@ public class Simulator implements Runnable {
     public static Double DEFAULT_CAM_ROLL_SCAL  =
         1.57;  // channel value to physical movement (+/-90 deg)
 
-
-    private static int sleepInterval = (int)1e6 / DEFAULT_SIM_SPEED;  // Main loop interval, in us
+    private static int sleepInterval = (int)1e6 / DEFAULT_SIM_RATE;  // Main loop interval, in us
+    private static double speedFactor = DEFAULT_SPEED_FACTOR;
     private static int autopilotSysId = DEFAULT_AUTOPILOT_SYSID;
     private static String autopilotType = DEFAULT_AUTOPILOT_TYPE;
     private static String autopilotIpAddress = LOCAL_HOST;
     private static int autopilotPort = DEFAULT_AUTOPILOT_PORT;
     private static String qgcIpAddress = LOCAL_HOST;
+    private static String sdkIpAddress = LOCAL_HOST;
     private static int qgcPeerPort = DEFAULT_QGC_PEER_PORT;
+    private static int sdkPeerPort = DEFAULT_SDK_PEER_PORT;
     private static String serialPath = DEFAULT_SERIAL_PATH;
     private static int serialBaudRate = DEFAULT_SERIAL_BAUD_RATE;
 
     private static HashSet<Integer> monitorMessageIds = new HashSet<Integer>();
     private static boolean monitorMessage = false;
+
 
     private Visualizer3D visualizer;
     private AbstractMulticopter vehicle;
@@ -111,12 +124,18 @@ public class Simulator implements Runnable {
     private MAVLinkHILSystem hilSystem;
     private MAVLinkPort autopilotMavLinkPort;
     private UDPMavLinkPort udpGCMavLinkPort;
+    private UDPMavLinkPort udpSDKMavLinkPort;
     private ScheduledFuture<?> thisHandle;
     private World world;
     private ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private SystemOutHandler outputHandler;
 //  private int simDelayMax = 500;  // Max delay between simulated and real time to skip samples in simulator, in ms
 
+    private long simTimeUs = 0;
+    private volatile boolean paused = false;
+    private long lastTimeRan = 0;
+    private int checkFactor = 2;
+    private int slowDownCounter = 0;
     public volatile boolean shutdown = false;
 
     public Simulator() throws IOException, InterruptedException {
@@ -155,6 +174,7 @@ public class Simulator implements Runnable {
         // Create GUI
         System.out.println("Starting GUI...");  // this is the longest part of startup so let user know
         visualizer = new Visualizer3D(world);
+        visualizer.setSimulator(this);
         visualizer.setAAEnabled(GUI_ENABLE_AA);
         if (GUI_START_MAXIMIZED) {
             visualizer.setExtendedState(JFrame.MAXIMIZED_BOTH);
@@ -174,30 +194,26 @@ public class Simulator implements Runnable {
         // Create MAVLink connections
         MAVLinkConnection connHIL = new MAVLinkConnection(world);
         world.addObject(connHIL);
-        MAVLinkConnection connCommon = new MAVLinkConnection(world);
-        // Don't spam ground station with HIL messages
-        if (schema != null) {
-            connCommon.addSkipMessage(schema.getMessageDefinition("HIL_CONTROLS").id);
-            connCommon.addSkipMessage(schema.getMessageDefinition("HIL_ACTUATOR_CONTROLS").id);
-            connCommon.addSkipMessage(schema.getMessageDefinition("HIL_SENSOR").id);
-            connCommon.addSkipMessage(schema.getMessageDefinition("HIL_GPS").id);
-            connCommon.addSkipMessage(schema.getMessageDefinition("HIL_STATE_QUATERNION").id);
-        }
-        world.addObject(connCommon);
 
         // Create ports
-        if (USE_SERIAL_PORT) {
-            //Serial port: connection to autopilot over serial.
+        if (PORT == Port.SERIAL) {
             SerialMAVLinkPort port = new SerialMAVLinkPort(schema);
             port.setup(serialPath, serialBaudRate, 8, 1, 0);
             port.setDebug(DEBUG_MODE);
             autopilotMavLinkPort = port;
+
+        } else if (PORT == Port.TCP) {
+            TCPMavLinkPort port = new TCPMavLinkPort(schema);
+            port.setDebug(DEBUG_MODE);
+            port.setup(autopilotIpAddress, autopilotPort);
+            if (monitorMessage) {
+                port.setMonitorMessageID(monitorMessageIds);
+            }
+            autopilotMavLinkPort = port;
         } else {
             UDPMavLinkPort port = new UDPMavLinkPort(schema);
             port.setDebug(DEBUG_MODE);
-            port.setup(autopilotIpAddress,
-                       autopilotPort); // default source port 0 for autopilot, which is a client of JMAVSim
-            // monitor certain mavlink messages.
+            port.setup(autopilotIpAddress, autopilotPort);
             if (monitorMessage) {
                 port.setMonitorMessageID(monitorMessageIds);
             }
@@ -206,17 +222,53 @@ public class Simulator implements Runnable {
 
         // allow HIL and GCS to talk to this port
         connHIL.addNode(autopilotMavLinkPort);
-        connCommon.addNode(autopilotMavLinkPort);
-        // UDP port: connection to ground station
-        udpGCMavLinkPort = new UDPMavLinkPort(schema);
-        udpGCMavLinkPort.setDebug(DEBUG_MODE);
+
+        // We don't want to spam QGC or SDK with HIL messages.
+        String[] skipMessages = {
+            "HIL_CONTROLS",
+            "HIL_ACTUATOR_CONTROLS",
+            "HIL_SENSOR",
+            "HIL_GPS",
+            "HIL_STATE_QUATERNION"
+        };
+
         if (COMMUNICATE_WITH_QGC) {
-            udpGCMavLinkPort.setup(qgcIpAddress, qgcPeerPort);
+            MAVLinkConnection connQGC = new MAVLinkConnection(world);
+            if (schema != null) {
+                for (String  skipMessage : skipMessages) {
+                    connQGC.addSkipMessage(schema.getMessageDefinition(skipMessage).id);
+                }
+            }
+            world.addObject(connQGC);
+
+            udpGCMavLinkPort = new UDPMavLinkPort(schema);
             udpGCMavLinkPort.setDebug(DEBUG_MODE);
-            if (monitorMessage && USE_SERIAL_PORT) {
+            udpGCMavLinkPort.setup(qgcIpAddress, qgcPeerPort);
+            if (monitorMessage && PORT == Port.SERIAL) {
                 udpGCMavLinkPort.setMonitorMessageID(monitorMessageIds);
             }
-            connCommon.addNode(udpGCMavLinkPort);
+            connQGC.addNode(udpGCMavLinkPort);
+            connQGC.addNode(autopilotMavLinkPort);
+        }
+
+        if (COMMUNICATE_WITH_SDK) {
+
+            MAVLinkConnection connSDK = new MAVLinkConnection(world);
+            if (schema != null) {
+                for (String  skipMessage : skipMessages) {
+                    connSDK.addSkipMessage(schema.getMessageDefinition(skipMessage).id);
+                }
+            }
+            world.addObject(connSDK);
+
+            udpSDKMavLinkPort = new UDPMavLinkPort(schema);
+            udpSDKMavLinkPort.setDebug(DEBUG_MODE);
+            udpSDKMavLinkPort.setup(sdkIpAddress, sdkPeerPort);
+            if (monitorMessage && PORT == Port.SERIAL) {
+                udpSDKMavLinkPort.setMonitorMessageID(monitorMessageIds);
+            }
+            connSDK.addNode(udpSDKMavLinkPort);
+            connSDK.addNode(autopilotMavLinkPort);
         }
 
         // Set up magnetic field deviations
@@ -249,6 +301,7 @@ public class Simulator implements Runnable {
         // Create MAVLink HIL system
         // SysId should be the same as autopilot, ComponentId should be different!
         hilSystem = new MAVLinkHILSystem(schema, autopilotSysId, 51, vehicle);
+        hilSystem.setSimulator(this);
         //hilSystem.setHeartbeatInterval(0);
         connHIL.addNode(hilSystem);
         world.addObject(vehicle);
@@ -288,7 +341,20 @@ public class Simulator implements Runnable {
             }
         }
 
-        thisHandle = executor.scheduleAtFixedRate(this, 0, sleepInterval, TimeUnit.MICROSECONDS);
+        if (COMMUNICATE_WITH_SDK) {
+            try {
+                udpSDKMavLinkPort.open();
+            } catch (IOException e) {
+                System.out.println("ERROR: Failed to open UDP link to SDK: " + e.getLocalizedMessage());
+            }
+        }
+
+        if (LOCKSTEP_ENABLED) {
+            thisHandle = executor.scheduleAtFixedRate(this, 0, (int)(sleepInterval / speedFactor / checkFactor),
+                                                      TimeUnit.MICROSECONDS);
+        } else {
+            thisHandle = executor.scheduleAtFixedRate(this, 0, (int)(sleepInterval), TimeUnit.MICROSECONDS);
+        }
 
         Runtime.getRuntime().addShutdownHook(new Thread() {
             @Override
@@ -329,6 +395,11 @@ public class Simulator implements Runnable {
         }
 
         System.exit(0);
+
+    }
+
+    public void pauseToggle() {
+        paused = !paused;
     }
 
     private AbstractMulticopter buildMulticopter() {
@@ -346,12 +417,11 @@ public class Simulator implements Runnable {
         SimpleSensors sensors = new SimpleSensors();
         sensors.setGPSInterval(50);
         sensors.setGPSDelay(200);
-        sensors.setGPSStartTime(System.currentTimeMillis() + 300);
         sensors.setNoise_Acc(0.05f);
         sensors.setNoise_Gyo(0.01f);
         sensors.setNoise_Mag(0.005f);
         sensors.setNoise_Prs(0.1f);
-        vehicle.setSensors(sensors);
+        vehicle.setSensors(sensors, getSimMillis());
         //v.setDragRotate(0.1);
 
         return vehicle;
@@ -377,14 +447,13 @@ public class Simulator implements Runnable {
         SimpleSensors sensors = new SimpleSensors();
         sensors.setGPSInterval(50);
         sensors.setGPSDelay(0);  // [ms]
-        //sensors.setGPSStartTime(-1);
         //sensors.setPressureAltOffset(world.getGlobalReference().alt);
         sensors.setNoise_Acc(0.02f);
         sensors.setNoise_Gyo(0.001f);
         sensors.setNoise_Mag(0.005f);
         sensors.setNoise_Prs(0.01f);
 
-        vehicle.setSensors(sensors);
+        vehicle.setSensors(sensors, getSimMillis());
 
         return vehicle;
     }
@@ -400,13 +469,42 @@ public class Simulator implements Runnable {
     }
 
     public void run() {
+        if (paused) {
+            return;
+        }
+
+        boolean needsToPause = false;
+        long now;
+
+        if (LOCKSTEP_ENABLED) {
+            // In lockstep we run every update with a checkFactor of (e.g. 2).
+            // This way every second update is just an IO (input/output) run where
+            // time is not increased.
+            boolean ioRunOnly = (slowDownCounter % checkFactor != 0);
+
+            if (!hilSystem.gotHilActuatorControls() && !ioRunOnly) {
+                advanceTime();
+            }
+
+            now = getSimMillis();
+
+            needsToPause = ((lastTimeRan == now) || ioRunOnly);
+        } else {
+            now = getSimMillis();
+        }
+
         try {
-            world.update(System.currentTimeMillis());
+            world.update(now, needsToPause);
         } catch (Exception e) {
             System.err.println("Exception in Simulator.world.update() : ");
             e.printStackTrace();
             executor.shutdown();
         }
+
+        if (!needsToPause) {
+            lastTimeRan = now;
+        }
+        slowDownCounter++;
     }
 
     /**
@@ -443,8 +541,8 @@ public class Simulator implements Runnable {
 
         if (vals.length > 3) {
             try {
-                decl = new Double(vals[1]);
-                incl = new Double(vals[2]);
+                decl = Double.valueOf(vals[1]);
+                incl = Double.valueOf(vals[2]);
             } catch (NumberFormatException e) {
                 System.err.println("Error parsing response: " + resp + "\n");
                 return magField;
@@ -468,9 +566,33 @@ public class Simulator implements Runnable {
         return magField;
     }
 
+    public long getSimMillis() {
+        if (LOCKSTEP_ENABLED) {
+            if (simTimeUs == 0) {
+                simTimeUs = System.currentTimeMillis() * 1000;
+            }
+            return simTimeUs / 1000;
+        } else {
+            return System.currentTimeMillis();
+        }
+    }
+
+    public long getRealMillis() {
+        return System.currentTimeMillis();
+    }
+
+    public void advanceTime() {
+        if (LOCKSTEP_ENABLED) {
+            simTimeUs += sleepInterval;
+        }
+        // not needed without lockstep.
+    }
+
     public final static String PRINT_INDICATION_STRING = "-m [<MsgID[, MsgID]...>]";
     public final static String UDP_STRING = "-udp <mav ip>:<mav port>";
+    public final static String TCP_STRING = "-tcp <mav ip>:<mav port>";
     public final static String QGC_STRING = "-qgc <qgc ip address>:<qgc peer port>";
+    public final static String SDK_STRING = "-sdk <sdk ip address>:<sdk peer port>";
     public final static String SERIAL_STRING = "-serial [<path> <baudRate>]";
     public final static String MAG_STRING = "-automag";
     public final static String REP_STRING = "-rep";
@@ -479,14 +601,27 @@ public class Simulator implements Runnable {
     public final static String GUI_MAX_STRING = "-max";
     public final static String GUI_VIEW_STRING = "-view (fpv|grnd|gmbl)";
     public final static String AP_STRING = "-ap <autopilot_type>";
-    public final static String SPEED_STRING = "-r <Hz>";
+    public final static String RATE_STRING = "-r <Hz>";
+    public final static String SPEED_FACTOR_STRING = "-f";
+    public final static String LOCKSTEP_STRING = "-lockstep";
     public final static String CMD_STRING =
         "java [-Xmx512m] -cp lib/*:out/production/jmavsim.jar me.drton.jmavsim.Simulator";
     public final static String CMD_STRING_JAR = "java [-Xmx512m] -jar jmavsim_run.jar";
-    public final static String USAGE_STRING = CMD_STRING_JAR + " [-h] [" + UDP_STRING + " | " +
-                                              SERIAL_STRING + "] [" + SPEED_STRING + "] [" + AP_STRING + "] [" + MAG_STRING + "] " +
-                                              "[" + QGC_STRING + "] [" + GIMBAL_STRING + "] [" + GUI_AA_STRING + "] [" + GUI_MAX_STRING + "] [" +
-                                              GUI_VIEW_STRING + "] [" + REP_STRING + "] [" + PRINT_INDICATION_STRING + "]";
+    public final static String USAGE_STRING = CMD_STRING_JAR + " [-h] [" +
+                                              UDP_STRING + " | " +
+                                              SERIAL_STRING + "] [" +
+                                              RATE_STRING + "] [" +
+                                              SPEED_FACTOR_STRING + "] [" +
+                                              AP_STRING + "] [" +
+                                              MAG_STRING + "] " + "[" +
+                                              QGC_STRING + "] [" +
+                                              SDK_STRING + "] [" +
+                                              GIMBAL_STRING + "] [" +
+                                              GUI_AA_STRING + "] [" +
+                                              GUI_MAX_STRING + "] [" +
+                                              GUI_VIEW_STRING + "] [" +
+                                              REP_STRING + "] [" +
+                                              PRINT_INDICATION_STRING + "]";
 
     public static void main(String[] args)
     throws InterruptedException, IOException {
@@ -525,7 +660,7 @@ public class Simulator implements Runnable {
                     continue;
                 }
             } else if (arg.equalsIgnoreCase("-udp")) {
-                USE_SERIAL_PORT = false;
+                PORT = Port.UDP;
                 if (i == args.length) {
                     // only arg is -udp, so use default values.
                     break;
@@ -554,8 +689,38 @@ public class Simulator implements Runnable {
                     System.err.println("-udp needs an argument: " + UDP_STRING);
                     return;
                 }
+            } else if (arg.equalsIgnoreCase("-tcp")) {
+                PORT = Port.TCP;
+                if (i == args.length) {
+                    // only arg is -tcp, so use default values.
+                    break;
+                }
+                if (i < args.length) {
+                    String nextArg = args[i++];
+                    if (nextArg.startsWith("-")) {
+                        // only turning on udp, but want to use default ports
+                        i--;
+                        continue;
+                    }
+                    try {
+                        // try to parse passed-in ports.
+                        String[] list = nextArg.split(":");
+                        if (list.length != 2) {
+                            System.err.println("Expected: " + TCP_STRING + ", got: " + Arrays.toString(list));
+                            return;
+                        }
+                        autopilotIpAddress = list[0];
+                        autopilotPort = Integer.parseInt(list[1]);
+                    } catch (NumberFormatException e) {
+                        System.err.println("Expected: " + USAGE_STRING + ", got: " + e.toString());
+                        return;
+                    }
+                } else {
+                    System.err.println("-tcp needs an argument: " + TCP_STRING);
+                    return;
+                }
             } else if (arg.equals("-serial")) {
-                USE_SERIAL_PORT = true;
+                PORT = Port.SERIAL;
                 if (i >= args.length) {
                     // only arg is -serial, so use default values
                     break;
@@ -608,6 +773,36 @@ public class Simulator implements Runnable {
                     System.err.println("-qgc needs an argument: " + QGC_STRING);
                     return;
                 }
+            } else if (arg.equals("-sdk")) {
+                COMMUNICATE_WITH_SDK = true;
+                if (i == args.length) {
+                    // only arg is -sdk, so use default values.
+                    break;
+                }
+                if (i < args.length) {
+                    String nextArg = args[i++];
+                    if (nextArg.startsWith("-")) {
+                        // only turning on udp, but want to use default ports
+                        i--;
+                        continue;
+                    }
+                    try {
+                        // try to parse passed-in ports.
+                        String[] list = nextArg.split(":");
+                        if (list.length != 2) {
+                            System.err.println("Expected: " + SDK_STRING + ", got: " + Arrays.toString(list));
+                            return;
+                        }
+                        sdkIpAddress = list[0];
+                        sdkPeerPort = Integer.parseInt(list[1]);
+                    } catch (NumberFormatException e) {
+                        System.err.println("Expected: " + SDK_STRING + ", got: " + e.toString());
+                        return;
+                    }
+                } else {
+                    System.err.println("-sdk needs an argument: " + SDK_STRING);
+                    return;
+                }
             } else if (arg.equals("-ap")) {
                 if (i < args.length) {
                     autopilotType = args[i++];
@@ -621,10 +816,24 @@ public class Simulator implements Runnable {
                     try {
                         t = Integer.parseInt(args[i++]);
                     } catch (NumberFormatException e) {
-                        System.err.println("Expected numeric argument after -r: " + SPEED_STRING);
+                        System.err.println("Expected numeric argument after -r: " + RATE_STRING);
                         return;
                     }
                     sleepInterval = (int)1e6 / t;
+                } else {
+                    System.err.println("-r requires Hz as an argument.");
+                    return;
+                }
+            } else if (arg.equals("-f")) {
+                if (i < args.length) {
+                    double f;
+                    try {
+                        f = Double.parseDouble(args[i++]);
+                    } catch (NumberFormatException e) {
+                        System.err.println("Expected numeric argument after -f: " + SPEED_FACTOR_STRING);
+                        return;
+                    }
+                    speedFactor = f;
                 } else {
                     System.err.println("-r requires Hz as an argument.");
                     return;
@@ -660,6 +869,8 @@ public class Simulator implements Runnable {
                 USE_GIMBAL = true;
             } else if (arg.equals("-no-gimbal")) {
                 USE_GIMBAL = false;
+            } else if (arg.equals("-lockstep")) {
+                LOCKSTEP_ENABLED = true;
             } else if (arg.equals("-debug")) {
                 DEBUG_MODE = true;
             } else {
@@ -670,6 +881,12 @@ public class Simulator implements Runnable {
 
         if (i != args.length) {
             System.err.println("Usage: " + USAGE_STRING);
+            return;
+        }
+
+        if (speedFactor != DEFAULT_SPEED_FACTOR && !LOCKSTEP_ENABLED) {
+            System.err.println(SPEED_FACTOR_STRING + " requires lockstep to be enabled using: '" +
+                               LOCKSTEP_STRING + "'");
             return;
         }
 
@@ -690,9 +907,15 @@ public class Simulator implements Runnable {
         System.out.println(SERIAL_STRING);
         System.out.println("      Open a serial connection to the MAV instead of UDP.");
         System.out.println("      Default path/baud is: " + serialPath + " " + serialBaudRate + "");
-        System.out.println(SPEED_STRING);
+        System.out.println(RATE_STRING);
         System.out.println("      Refresh rate at which jMAVSim runs. This dictates the frequency");
-        System.out.println("      of the HIL_SENSOR messages. Default is " + DEFAULT_SIM_SPEED + " Hz");
+        System.out.println("      of the HIL_SENSOR messages. Default is " + DEFAULT_SIM_RATE + " Hz");
+        System.out.println(SPEED_FACTOR_STRING);
+        System.out.println("      Speed factor at which jMAVSim runs. A factor of 2.0 means the system");
+        System.out.println("      runs double than real time speed. Default is " + DEFAULT_SPEED_FACTOR);
+        System.out.println(LOCKSTEP_STRING);
+        System.out.println("      Set to enable Lockstep simulation (used with PX4 SITL),");
+        System.out.println("      required for speed factor '-f'.");
         System.out.println(AP_STRING);
         System.out.println("      Specify the MAV type. E.g. 'px4' or 'aq'. Default is: " + autopilotType +
                            "");
@@ -702,6 +925,9 @@ public class Simulator implements Runnable {
         System.out.println(QGC_STRING);
         System.out.println("      Forward message packets to QGC via UDP at " + qgcIpAddress + ":" +
                            qgcPeerPort + "");
+        System.out.println(SDK_STRING);
+        System.out.println("      Forward message packets to SDK via UDP at " + sdkIpAddress + ":" +
+                           sdkPeerPort + "");
         System.out.println(GIMBAL_STRING);
         System.out.println("      Enable/Disable the gimbal model. Default is '" + USE_GIMBAL + "'.");
         System.out.println(GUI_AA_STRING);
@@ -742,6 +968,7 @@ public class Simulator implements Runnable {
         System.out.println("   T   - Toggle data report updates.");
         System.out.println("   D   - Toggle sensor parameter control sidebar.");
         System.out.println("   F1  - Show this key commands reference.");
+        System.out.println("   P   - Pause simulation.");
         System.out.println("  ESC  - Exit jMAVSim.");
         System.out.println(" SPACE - Reset vehicle & view to start position.");
         System.out.println("");
