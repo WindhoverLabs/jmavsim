@@ -61,7 +61,7 @@ public class Simulator implements Runnable {
     public static final double    DEFAULT_SPEED_FACTOR = 1.0;
     public static final int    DEFAULT_AUTOPILOT_SYSID =
         -1; // System ID of autopilot to communicate with. -1 to auto set ID on first received heartbeat.
-    public static final String DEFAULT_AUTOPILOT_TYPE = "generic";  // eg. "px4" or "aq"
+    public static final String DEFAULT_AUTOPILOT_TYPE = "px4";  // eg. "px4" or "aq"
     public static final int    DEFAULT_AUTOPILOT_PORT = 14560;
     public static final int    DEFAULT_QGC_PEER_PORT = 14550;
     public static final int    DEFAULT_SDK_PEER_PORT = 14540;
@@ -77,7 +77,9 @@ public class Simulator implements Runnable {
     // Seattle downtown: 47.592182, -122.316031, 86m
     // Moscow downtown: 55.753395, 37.625427, 155m
     // Trumansburg: 42.5339037, -76.6452384, 287m
-    public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(47.397742, 8.545594, 488);
+    // Mall of the Mainland: 29.40749300874598, -95.02667963504793, 5m
+    //public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(47.397742, 8.545594, 488);
+    public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(29.40749300874598, -95.02667963504793, 5);
 
     // Mag inclination and declination in degrees. If both are left as zero, then DEFAULT_MAG_FIELD is used.
     // If DO_MAG_FIELD_LOOKUP = true or -automag switch is used then both this value and DEFAULT_MAG_FIELD are ignored.
@@ -87,8 +89,8 @@ public class Simulator implements Runnable {
     // T-burg: 68.17, -11.75
     // public static double  DEFAULT_MAG_INCL = 63.23;
     // public static double  DEFAULT_MAG_DECL = 2.44;
-    public static double  DEFAULT_MAG_INCL = 0.f;
-    public static double  DEFAULT_MAG_DECL = 0.f;
+    public static double  DEFAULT_MAG_INCL = 58.42;
+    public static double  DEFAULT_MAG_DECL = 2.06;
     // Alternate way to set mag field vectors directly if MAG_INCL and MAG_DECL are zero.
     //   If Y value is left as zero, the X value specifies the horizontal field and an
     //   approximate declination will be added later based on the origin GPS position.
@@ -96,7 +98,8 @@ public class Simulator implements Runnable {
     // Seattle: (0.18403f, 0.05142f, 0.49779f)
     // Moscow:  (0.16348f, 0.03311f, 0.49949f)
     // T-burg:  (0.19202f, -0.03993f, 0.48963f)
-    public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.21506f, 0.01021f, 0.42974f);
+    //public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.21506f, 0.01021f, 0.42974f);
+    public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.523185765f, 0.019230357f, 0.851988423f);
 
     public static int    DEFAULT_CAM_PITCH_CHAN =
         4;     // Control gimbal pitch from autopilot, -1 to disable

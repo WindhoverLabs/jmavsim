@@ -49,7 +49,7 @@ public class Quadcopter extends AbstractMulticopter {
             rotorPositions[2] = new Vector3d(armLength, 0.0, 0.0);
             rotorPositions[3] = new Vector3d(-armLength, 0.0, 0.0);
             for (i = 0; i < rotorsNum; ++i) {
-                rotorRotations[i] = (i < 2) ? -1 : 1;
+                rotorRotations[i] = (i < 2) ? 1 : -1;
             }
         }
 
