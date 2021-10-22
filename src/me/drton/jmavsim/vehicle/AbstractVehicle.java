@@ -22,9 +22,11 @@ public abstract class AbstractVehicle extends DynamicObject implements Reporting
     protected List<Double> control = Collections.emptyList();
     protected Sensors sensors = null;
 
-    public AbstractVehicle(World world, String modelName) {
-        super(world);
-        modelFromFile(modelName);
+    public AbstractVehicle(World world, String modelName, boolean showGui) {
+        super(world, showGui);
+        if (showGui) {
+            modelFromFile(modelName);
+        }
         resetObjectParameters();
     }
 
@@ -119,9 +121,9 @@ public abstract class AbstractVehicle extends DynamicObject implements Reporting
      *
      * @param sensors
      */
-    public void setSensors(Sensors sensors) {
+    public void setSensors(Sensors sensors, long t) {
         this.sensors = sensors;
-        sensors.setObject(this);
+        sensors.setObject(this, t);
     }
 
     public Sensors getSensors() {
@@ -138,10 +140,13 @@ public abstract class AbstractVehicle extends DynamicObject implements Reporting
     }
 
     @Override
-    public void update(long t) {
-        super.update(t);
+    public void update(long t, boolean paused) {
+        if (paused) {
+            return;
+        }
+        super.update(t, paused);
         if (sensors != null) {
-            sensors.update(t);
+            sensors.update(t, paused);
         }
     }
 }

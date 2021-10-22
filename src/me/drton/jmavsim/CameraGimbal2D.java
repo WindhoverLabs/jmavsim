@@ -34,8 +34,8 @@ public class CameraGimbal2D extends KinematicObject implements ReportingObject {
     private TransformGroup gimbalTG;
     private Matrix3d rotM3d = new Matrix3d(); // temp storage
 
-    public CameraGimbal2D(World world, String modelName) {
-        super(world);
+    public CameraGimbal2D(World world, String modelName, boolean showGui) {
+        super(world, showGui);
         if (!modelName.isEmpty()) {
 
             Texture texture = new TextureLoader(modelName, null).getTexture();
@@ -113,7 +113,7 @@ public class CameraGimbal2D extends KinematicObject implements ReportingObject {
     }
 
     @Override
-    public void update(long t) {
+    public void update(long t, boolean paused) {
         this.position = (Vector3d) baseObject.position.clone();
         this.attitude = (Vector3d) baseObject.attitude.clone();
         this.rotation.rotZ(this.attitude.z);

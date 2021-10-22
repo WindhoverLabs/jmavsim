@@ -20,8 +20,8 @@ public abstract class DynamicObject extends KinematicObject {
     private Matrix3d rotMtx = new Matrix3d();
     private AxisAngle4d rotAng = new AxisAngle4d();
 
-    public DynamicObject(World world) {
-        super(world);
+    public DynamicObject(World world, boolean showGui) {
+        super(world, showGui);
         rotation.rotX(0);
         momentOfInertia.rotZ(0.0);
         momentOfInertiaInv.rotZ(0.0);
@@ -41,7 +41,10 @@ public abstract class DynamicObject extends KinematicObject {
     }
 
     @Override
-    public void update(long t) {
+    public void update(long t, boolean paused) {
+        if (paused) {
+            return;
+        }
         if (lastTime >= 0) {
             double dt = Math.max((t - lastTime) / 1000.0, 0.001);  // constrain time step
             double grnd = getWorld().getEnvironment().getGroundLevelAt(position);

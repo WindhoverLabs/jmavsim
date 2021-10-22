@@ -28,8 +28,9 @@ public class LogPlayerTarget extends Target {
     private Vector3d postitionPrev = new Vector3d();
     private long timePrev = 0;
 
-    public LogPlayerTarget(World world, double size) throws FileNotFoundException {
-        super(world, size);
+    public LogPlayerTarget(World world, double size, boolean showGui)
+        throws FileNotFoundException {
+        super(world, size, showGui);
     }
 
     public void openLog(LogReader logReader) {
@@ -60,7 +61,7 @@ public class LogPlayerTarget extends Target {
     }
 
     @Override
-    public void update(long t) {
+    public void update(long t, boolean paused) {
         if (logReader != null) {
             Map<String, Object> logData = new HashMap<String, Object>();
             while (logStart + logT < t) {

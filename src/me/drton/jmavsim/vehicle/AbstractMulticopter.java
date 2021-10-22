@@ -15,8 +15,8 @@ public abstract class AbstractMulticopter extends AbstractVehicle {
     private double dragRotate = 0.0;
     protected Rotor[] rotors;
 
-    public AbstractMulticopter(World world, String modelName) {
-        super(world, modelName);
+    public AbstractMulticopter(World world, String modelName, boolean showGui) {
+        super(world, modelName, showGui);
         rotors = new Rotor[getRotorsNum()];
         for (int i = 0; i < getRotorsNum(); i++) {
             rotors[i] = new Rotor();
@@ -97,11 +97,14 @@ public abstract class AbstractMulticopter extends AbstractVehicle {
     }
 
     @Override
-    public void update(long t) {
-        for (Rotor rotor : rotors) {
-            rotor.update(t);
+    public void update(long t, boolean paused) {
+        if (paused) {
+            return;
         }
-        super.update(t);
+        for (Rotor rotor : rotors) {
+            rotor.update(t, paused);
+        }
+        super.update(t, paused);
         for (int i = 0; i < rotors.length; i++) {
             double c = control.size() > i ? control.get(i) : 0.0;
             rotors[i].setControl(c);

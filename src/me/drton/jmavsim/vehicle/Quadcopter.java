@@ -26,11 +26,12 @@ public class Quadcopter extends AbstractMulticopter {
      * @param rotorTorque    torque at full thrust of one rotor in [Nm]
      * @param rotorTimeConst spin-up time of rotor [s]
      * @param rotorsOffset   rotors positions offset from gravity center
+     * @param showGui        false if the GUI has been disabled
      */
-    public Quadcopter(World world, String modelName, String orientation, String style, double armLength,
-                      double rotorThrust,
-                      double rotorTorque, double rotorTimeConst, Vector3d rotorsOffset) {
-        super(world, modelName);
+    public Quadcopter(World world, String modelName, String orientation, String style,
+                      double armLength, double rotorThrust, double rotorTorque,
+                      double rotorTimeConst, Vector3d rotorsOffset, boolean showGui) {
+        super(world, modelName, showGui);
 
         int i;
 
@@ -48,7 +49,7 @@ public class Quadcopter extends AbstractMulticopter {
             rotorPositions[2] = new Vector3d(armLength, 0.0, 0.0);
             rotorPositions[3] = new Vector3d(-armLength, 0.0, 0.0);
             for (i = 0; i < rotorsNum; ++i) {
-                rotorRotations[i] = (i < 2) ? -1 : 1;
+                rotorRotations[i] = (i < 2) ? 1 : -1;
             }
         }
 

@@ -12,8 +12,9 @@ public class SimpleTarget extends Target {
     private long timeStart = 0;
     private long timeFinish = 10000;
 
-    public SimpleTarget(World world, double size) throws FileNotFoundException {
-        super(world, size);
+    public SimpleTarget(World world, double size, boolean showGui)
+        throws FileNotFoundException {
+        super(world, size, showGui);
     }
 
     public void setTrajectory(Vector3d positionStart, Vector3d positionFinish, long timeStart,
@@ -25,7 +26,7 @@ public class SimpleTarget extends Target {
     }
 
     @Override
-    public void update(long t) {
+    public void update(long t, boolean paused) {
         double progress = Math.min(1.0, Math.max(0.0,
                                                  (double)(t - timeStart) / (double)(timeFinish - timeStart)));
         Vector3d vec = new Vector3d();
