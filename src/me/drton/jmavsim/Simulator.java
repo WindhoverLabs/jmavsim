@@ -87,7 +87,6 @@ public class Simulator implements Runnable {
     // Seattle: 69.00, 15.61
     // Moscow: 71.53, 11.45
     // T-burg: 68.17, -11.75
-    // Mall of the Mainland: 58.42 2.06
     // public static double  DEFAULT_MAG_INCL = 63.23;
     // public static double  DEFAULT_MAG_DECL = 2.44;
     public static double  DEFAULT_MAG_INCL = 58.42;
