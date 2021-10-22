@@ -17,9 +17,9 @@ import java.util.TimeZone;
  * MAVLinkHILSystem is MAVLink bridge between AbstractVehicle and autopilot connected via MAVLink.
  * MAVLinkHILSystem should have the same sysID as the autopilot, but different componentId.
  */
-public class MAVLinkHILSystem extends MAVLinkSystem {
-    private Simulator simulator;
-    private AbstractVehicle vehicle;
+public class MAVLinkHILSystem extends MAVLinkHILSystemBase {
+    // private Simulator simulator;
+    // private AbstractVehicle vehicle;
     private boolean gotHeartBeat = false;
     private boolean inited = false;
     private boolean stopped = false;
@@ -38,14 +38,10 @@ public class MAVLinkHILSystem extends MAVLinkSystem {
      * @param vehicle     vehicle to connect
      */
     public MAVLinkHILSystem(MAVLinkSchema schema, int sysId, int componentId, AbstractVehicle vehicle) {
-        super(schema, sysId, componentId);
-        this.vehicle = vehicle;
+        super(schema, sysId, componentId, vehicle);
     }
 
-    public void setSimulator(Simulator simulator) {
-        this.simulator = simulator;
-    }
-
+    @Override
     public boolean gotHilActuatorControls() {
         return gotHilActuatorControls;
     }
@@ -147,6 +143,7 @@ public class MAVLinkHILSystem extends MAVLinkSystem {
         }
     }
 
+    @Override
     public void initMavLink() {
         if (vehicle.getSensors().getGPSStartTime() == -1) {
             vehicle.getSensors().setGPSStartTime(simulator.getSimMillis() + 1000);
@@ -155,6 +152,7 @@ public class MAVLinkHILSystem extends MAVLinkSystem {
         inited = true;
     }
 
+    @Override
     public void endSim() {
         if (!inited) {
             return;
@@ -184,24 +182,34 @@ public class MAVLinkHILSystem extends MAVLinkSystem {
         // Sensors
         MAVLinkMessage msg_sensor = new MAVLinkMessage(schema, "HIL_SENSOR", sysId, componentId,
                                                        protocolVersion);
+
+        // sensor source bitmask
+        int sensor_source = 0;
+
         msg_sensor.set("time_usec", tu);
         Vector3d tv = sensors.getAcc();
         msg_sensor.set("xacc", tv.x);
         msg_sensor.set("yacc", tv.y);
         msg_sensor.set("zacc", tv.z);
         tv = sensors.getGyro();
+        sensor_source |= 0b111;
         msg_sensor.set("xgyro", tv.x);
         msg_sensor.set("ygyro", tv.y);
         msg_sensor.set("zgyro", tv.z);
         tv = sensors.getMag();
+        sensor_source |= 0b111000;
         msg_sensor.set("xmag", tv.x);
         msg_sensor.set("ymag", tv.y);
         msg_sensor.set("zmag", tv.z);
+        sensor_source |= 0b111000000;
         msg_sensor.set("pressure_alt", sensors.getPressureAlt());
         msg_sensor.set("abs_pressure", sensors.getPressure() * 0.01);  // Pa to millibar
+        sensor_source |= 0b1101000000000;
         if (sensors.isReset()) {
             msg_sensor.set("fields_updated", (1 << 31));
             sensors.setReset(false);
+        } else {
+            msg_sensor.set("fields_updated", sensor_source);
         }
         sendMessage(msg_sensor);
 

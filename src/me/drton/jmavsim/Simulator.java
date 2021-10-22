@@ -45,6 +45,7 @@ public class Simulator implements Runnable {
         false;  // perform online mag incl/decl lookup for current position
     public static boolean   USE_GIMBAL            =
         true;   // enable gimbal modeling (optionally also define remote pitch/roll controls below)
+    public static boolean   SHOW_GUI              = true;   // Default is to have the GUI
     public static boolean   GUI_SHOW_REPORT_PANEL = false;  // start with report panel showing
     public static boolean   GUI_START_MAXIMIZED   = false;  // start with gui in maximized window
     public static boolean   GUI_ENABLE_AA         = true;   // anti-alias on 3D scene
@@ -54,6 +55,7 @@ public class Simulator implements Runnable {
     public static boolean   LOG_TO_STDOUT         =
         true;   // send System.out messages to stdout (console) as well as any custom handlers (see SystemOutHandler)
     public static boolean DEBUG_MODE = false;
+    public static boolean DISPLAY_ONLY = false; // display HIL_STATE_QUATERNION from the autopilot, simulation engine disabled
 
     public static final int    DEFAULT_SIM_RATE = 250; // Hz
     public static final double    DEFAULT_SPEED_FACTOR = 1.0;
@@ -81,21 +83,23 @@ public class Simulator implements Runnable {
 
     // Mag inclination and declination in degrees. If both are left as zero, then DEFAULT_MAG_FIELD is used.
     // If DO_MAG_FIELD_LOOKUP = true or -automag switch is used then both this value and DEFAULT_MAG_FIELD are ignored.
-    // Zurich:  63.32, 2.13
-    // Seattle:
-    // Moscow:
-    // T-burg: 68.53, -11.94
+    // Zurich:  63.39, 2.75
+    // Seattle: 69.00, 15.61
+    // Moscow: 71.53, 11.45
+    // T-burg: 68.17, -11.75
     // Mall of the Mainland: 58.42 2.06
-    //public static double  DEFAULT_MAG_INCL = 63.32;
-    //public static double  DEFAULT_MAG_DECL = 2.13;
+    // public static double  DEFAULT_MAG_INCL = 63.23;
+    // public static double  DEFAULT_MAG_DECL = 2.44;
     public static double  DEFAULT_MAG_INCL = 58.42;
     public static double  DEFAULT_MAG_DECL = 2.06;
     // Alternate way to set mag field vectors directly if MAG_INCL and MAG_DECL are zero.
-    //   If Y value is left as zero, then an approximate declination will be added later based on the origin GPS position.
-    // Zurich:  (0.44831f, 0.01664f, 0.89372f)
-    // Seattle: (0.34252f, 0.09805f, 0.93438f)
-    // Moscow:  (0.31337f, 0.06030f, 0.94771f)
-    //public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.44831f, 0.01664f, 0.89372f);
+    //   If Y value is left as zero, the X value specifies the horizontal field and an
+    //   approximate declination will be added later based on the origin GPS position.
+    // Zurich:  (0.21506f, 0.01021f, 0.42974f)
+    // Seattle: (0.18403f, 0.05142f, 0.49779f)
+    // Moscow:  (0.16348f, 0.03311f, 0.49949f)
+    // T-burg:  (0.19202f, -0.03993f, 0.48963f)
+    //public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.21506f, 0.01021f, 0.42974f);
     public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.523185765f, 0.019230357f, 0.851988423f);
 
     public static int    DEFAULT_CAM_PITCH_CHAN =
@@ -127,7 +131,7 @@ public class Simulator implements Runnable {
     private Visualizer3D visualizer;
     private AbstractMulticopter vehicle;
     private CameraGimbal2D gimbal;
-    private MAVLinkHILSystem hilSystem;
+    private MAVLinkHILSystemBase hilSystem;
     private MAVLinkPort autopilotMavLinkPort;
     private UDPMavLinkPort udpGCMavLinkPort;
     private UDPMavLinkPort udpSDKMavLinkPort;
@@ -170,6 +174,12 @@ public class Simulator implements Runnable {
         LatLonAlt referencePos = new LatLonAlt(latRef, lonRef, altRef);
         world.setGlobalReference(referencePos);
 
+        // Get SITL speed from environment as well.
+        String speedFactorStr = System.getenv("PX4_SIM_SPEED_FACTOR");
+        if (speedFactorStr != null) {
+            speedFactor = Double.parseDouble(speedFactorStr);
+        }
+
         // Create environment
         SimpleEnvironment simpleEnvironment = new SimpleEnvironment(world);
         //simpleEnvironment.setWind(new Vector3d(0.8, 2.0, 0.0));
@@ -177,17 +187,23 @@ public class Simulator implements Runnable {
         //simpleEnvironment.setGroundLevel(0.0f);
         world.addObject(simpleEnvironment);
 
-        // Create GUI
-        System.out.println("Starting GUI...");  // this is the longest part of startup so let user know
-        visualizer = new Visualizer3D(world);
-        visualizer.setSimulator(this);
-        visualizer.setAAEnabled(GUI_ENABLE_AA);
-        if (GUI_START_MAXIMIZED) {
-            visualizer.setExtendedState(JFrame.MAXIMIZED_BOTH);
-        }
+        if (SHOW_GUI) {
+            // Create GUI
+            System.out.println("Starting GUI...");  // this is the longest part of startup so let user know
+            visualizer = new Visualizer3D(world);
+            visualizer.setSimulator(this);
+            visualizer.setAAEnabled(GUI_ENABLE_AA);
+            if (GUI_START_MAXIMIZED) {
+                visualizer.setExtendedState(JFrame.MAXIMIZED_BOTH);
+            }
 
-        // add GUI output stream handler for displaying messages
-        outputHandler.addOutputStream(visualizer.getOutputStream());
+            // add GUI output stream handler for displaying messages
+            outputHandler.addOutputStream(visualizer.getOutputStream());
+        } else {
+            // GUI is disabled
+            System.out.println("GUI not enabled");
+            visualizer = null;
+        }
 
         MAVLinkSchema schema = null;
         try {
@@ -283,7 +299,7 @@ public class Simulator implements Runnable {
             simpleEnvironment.setMagField(magFieldLookup(referencePos));
         } else if (DEFAULT_MAG_INCL != 0.0 || DEFAULT_MAG_DECL != 0.0) {
             simpleEnvironment.setMagFieldByInclDecl(DEFAULT_MAG_INCL, DEFAULT_MAG_DECL);
-        } else if (DEFAULT_MAG_FIELD.y == 0.0f && (DEFAULT_MAG_FIELD.x != 0.0 ||
+        } else if (DEFAULT_MAG_FIELD.y == 0.0 && (DEFAULT_MAG_FIELD.x != 0.0 ||
                                                    DEFAULT_MAG_FIELD.z != 0.0)) {
             Vector3d magField = DEFAULT_MAG_FIELD;
             // Set declination based on the initialization position of the Simulator
@@ -295,6 +311,11 @@ public class Simulator implements Runnable {
             magDecl.rotZ(decl);
             magDecl.transform(magField);
             simpleEnvironment.setMagField(magField);
+        } else if (DEFAULT_MAG_FIELD.y != 0.0
+                   && DEFAULT_MAG_FIELD.x != 0.0
+                   && DEFAULT_MAG_FIELD.z != 0.0) {
+
+            simpleEnvironment.setMagField(DEFAULT_MAG_FIELD);
         }
 
         // Create vehicle with sensors
@@ -306,30 +327,40 @@ public class Simulator implements Runnable {
 
         // Create MAVLink HIL system
         // SysId should be the same as autopilot, ComponentId should be different!
-        hilSystem = new MAVLinkHILSystem(schema, autopilotSysId, 51, vehicle);
+        if (DISPLAY_ONLY){
+            vehicle.setIgnoreGravity(true);
+            vehicle.setIgnoreWind(true);
+            hilSystem = new MAVLinkDisplayOnly(schema, autopilotSysId, 51, vehicle);
+        } else {
+            hilSystem = new MAVLinkHILSystem(schema, autopilotSysId, 51, vehicle);
+            if (SHOW_GUI) {
+                visualizer.setHilSystem((MAVLinkHILSystem)hilSystem);
+            }
+        }
         hilSystem.setSimulator(this);
         //hilSystem.setHeartbeatInterval(0);
         connHIL.addNode(hilSystem);
         world.addObject(vehicle);
 
-        // Put camera on vehicle with gimbal
-        if (USE_GIMBAL) {
-            gimbal = buildGimbal();
-            world.addObject(gimbal);
-            visualizer.setGimbalViewObject(gimbal);
+        if (SHOW_GUI) {
+            // Put camera on vehicle with gimbal
+            if (USE_GIMBAL) {
+                gimbal = buildGimbal();
+                world.addObject(gimbal);
+                visualizer.setGimbalViewObject(gimbal);
+            }
+
+            // Create simulation report updater
+            world.addObject(new ReportUpdater(world, visualizer));
+
+            visualizer.addWorldModels();
+            visualizer.setVehicleViewObject(vehicle);
+
+            // set default view and zoom mode
+            visualizer.setViewType(GUI_START_VIEW);
+            visualizer.setZoomMode(GUI_START_ZOOM);
+            visualizer.toggleReportPanel(GUI_SHOW_REPORT_PANEL);
         }
-
-        // Create simulation report updater
-        world.addObject(new ReportUpdater(world, visualizer));
-
-        visualizer.addWorldModels();
-        visualizer.setHilSystem(hilSystem);
-        visualizer.setVehicleViewObject(vehicle);
-
-        // set default view and zoom mode
-        visualizer.setViewType(GUI_START_VIEW);
-        visualizer.setZoomMode(GUI_START_ZOOM);
-        visualizer.toggleReportPanel(GUI_SHOW_REPORT_PANEL);
 
         // Open ports
         try {
@@ -411,7 +442,7 @@ public class Simulator implements Runnable {
     private AbstractMulticopter buildMulticopter() {
         Vector3d gc = new Vector3d(0.0, 0.0, 0.0);  // gravity center
         AbstractMulticopter vehicle = new Quadcopter(world, DEFAULT_VEHICLE_MODEL, "x", "default",
-                                                     0.33 / 2, 4.0, 0.05, 0.005, gc);
+                                                     0.33 / 2, 4.0, 0.05, 0.005, gc, SHOW_GUI);
         Matrix3d I = new Matrix3d();
         // Moments of inertia
         I.m00 = 0.005;  // X
@@ -437,7 +468,7 @@ public class Simulator implements Runnable {
     private AbstractMulticopter buildAQ_leora() {
         Vector3d gc = new Vector3d(0.0, 0.0, 0.0);  // gravity center
         AbstractMulticopter vehicle = new Quadcopter(world, DEFAULT_VEHICLE_MODEL, "x", "cw_fr", 0.1, 1.35,
-                                                     0.02, 0.0005, gc);
+                                                     0.02, 0.0005, gc, SHOW_GUI);
 
         Matrix3d I = new Matrix3d();
         // Moments of inertia
@@ -465,7 +496,7 @@ public class Simulator implements Runnable {
     }
 
     private CameraGimbal2D buildGimbal() {
-        CameraGimbal2D g = new CameraGimbal2D(world, DEFAULT_GIMBAL_MODEL);
+        CameraGimbal2D g = new CameraGimbal2D(world, DEFAULT_GIMBAL_MODEL, SHOW_GUI);
         g.setBaseObject(vehicle);
         g.setPitchChannel(DEFAULT_CAM_PITCH_CHAN);
         g.setPitchScale(DEFAULT_CAM_PITCH_SCAL);
@@ -482,7 +513,7 @@ public class Simulator implements Runnable {
         boolean needsToPause = false;
         long now;
 
-        if (LOCKSTEP_ENABLED) {
+        if (LOCKSTEP_ENABLED && !DISPLAY_ONLY) {
             // In lockstep we run every update with a checkFactor of (e.g. 2).
             // This way every second update is just an IO (input/output) run where
             // time is not increased.
@@ -602,6 +633,7 @@ public class Simulator implements Runnable {
     public final static String SERIAL_STRING = "-serial [<path> <baudRate>]";
     public final static String MAG_STRING = "-automag";
     public final static String REP_STRING = "-rep";
+    public final static String SHOW_GUI_STRING = "[-no]-gui";
     public final static String GUI_AA_STRING = "[-no]-aa";
     public final static String GIMBAL_STRING = "[-no]-gimbal";
     public final static String GUI_MAX_STRING = "-max";
@@ -610,6 +642,7 @@ public class Simulator implements Runnable {
     public final static String RATE_STRING = "-r <Hz>";
     public final static String SPEED_FACTOR_STRING = "-f";
     public final static String LOCKSTEP_STRING = "-lockstep";
+    public final static String DISPLAY_ONLY_STRING = "-disponly";
     public final static String CMD_STRING =
         "java [-Xmx512m] -cp lib/*:out/production/jmavsim.jar me.drton.jmavsim.Simulator";
     public final static String CMD_STRING_JAR = "java [-Xmx512m] -jar jmavsim_run.jar";
@@ -617,17 +650,18 @@ public class Simulator implements Runnable {
                                               UDP_STRING + " | " +
                                               SERIAL_STRING + "] [" +
                                               RATE_STRING + "] [" +
-                                              SPEED_FACTOR_STRING + "] [" +
                                               AP_STRING + "] [" +
                                               MAG_STRING + "] " + "[" +
                                               QGC_STRING + "] [" +
                                               SDK_STRING + "] [" +
                                               GIMBAL_STRING + "] [" +
+                                              SHOW_GUI_STRING + "] [" +
                                               GUI_AA_STRING + "] [" +
                                               GUI_MAX_STRING + "] [" +
                                               GUI_VIEW_STRING + "] [" +
                                               REP_STRING + "] [" +
-                                              PRINT_INDICATION_STRING + "]";
+                                              PRINT_INDICATION_STRING + "] [" +
+                                              DISPLAY_ONLY_STRING + "]";
 
     public static void main(String[] args)
     throws InterruptedException, IOException {
@@ -840,6 +874,8 @@ public class Simulator implements Runnable {
                         return;
                     }
                     speedFactor = f;
+                    System.out.println("Warning: Setting speed factor using -f is deprecated.");
+                    System.out.println("Please use the environment variable PX4_SIM_SPEED_FACTOR instead.");
                 } else {
                     System.err.println("-r requires Hz as an argument.");
                     return;
@@ -861,6 +897,8 @@ public class Simulator implements Runnable {
                     System.err.println("-view requires an argument: " + GUI_VIEW_STRING);
                     return;
                 }
+            } else if (arg.equals(DISPLAY_ONLY_STRING)) {
+                DISPLAY_ONLY = true;    // // display HIL_STATE_QUATERNION from the autopilot, simulation engine disabled
             } else if (arg.equals("-automag")) {
                 DO_MAG_FIELD_LOOKUP = true;
             } else if (arg.equals("-rep")) {
@@ -875,6 +913,10 @@ public class Simulator implements Runnable {
                 USE_GIMBAL = true;
             } else if (arg.equals("-no-gimbal")) {
                 USE_GIMBAL = false;
+            } else if (arg.equals("-gui")) {
+                SHOW_GUI = true;
+            } else if (arg.equals("-no-gui")) {
+                SHOW_GUI = false;
             } else if (arg.equals("-lockstep")) {
                 LOCKSTEP_ENABLED = true;
             } else if (arg.equals("-debug")) {
@@ -936,6 +978,9 @@ public class Simulator implements Runnable {
                            sdkPeerPort + "");
         System.out.println(GIMBAL_STRING);
         System.out.println("      Enable/Disable the gimbal model. Default is '" + USE_GIMBAL + "'.");
+        System.out.println(SHOW_GUI_STRING);
+        System.out.println("      Enable/Disable the GUI. Default is '" + SHOW_GUI +
+                           "'.");
         System.out.println(GUI_AA_STRING);
         System.out.println("      Enable/Disable anti-aliasing on 3D scene. Default is '" + GUI_ENABLE_AA +
                            "'.");
@@ -949,6 +994,10 @@ public class Simulator implements Runnable {
         System.out.println(PRINT_INDICATION_STRING);
         System.out.println("      Monitor (echo) all/selected MAVLink messages to the console.");
         System.out.println("      If no MsgIDs are specified, all messages are monitored.");
+        System.out.println(DISPLAY_ONLY_STRING);
+        System.out.println("      Disable the simulation engine.");
+        System.out.println("      Display the autopilot states from HIL_STATE_QUATERNION.");
+        System.out.println("      Compatible with simulation-in-hardware.");
         System.out.println("");
         System.out.println("Key commands (in the visualizer window):");
         System.out.println("");
